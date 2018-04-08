@@ -48,7 +48,7 @@ Each kind of environment determines these three maps differently, as detailed in
 
 #### Project environments
 
-A project environment is defined by a directory containing a project file named `Project.toml` or `JuliaProject.toml` and optionally a manifest file named `Manifest.toml` or `JuliaManifest.toml`.
+A project environment is determined by a directory containing a project file named `Project.toml` and optionally a manifest file named `Manifest.toml`. These files can also be named or `JuliaProject.toml` and `JuliaManifest.toml` in which case `Project.toml` and `Manifest.toml` are ignored, allowing for file name collisions with other tools which could potentially consider a file named `Project.toml` or `Manifest.toml` significant.
 
 **The roots map** of the environment is determined by the contents of the project file, specifically, its top-level `name` entry , its top-level `uuid` entry, and its `[deps]` section—all of which are may also be absent. Consider the following example project file for the hypothetical application, `App`:
 
