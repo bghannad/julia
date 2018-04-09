@@ -26,27 +26,27 @@ Since the decentralized naming problem is somewhat abstract, it may help to walk
 
 ### Environments
 
-An *environment* determines what `import X` and `using X` mean in various parts of your code and what files these statements cause to be loaded. Julia understands three kinds of environments:
+An *environment* determines what `import X` and `using X` mean in various code contexts and what files these statements cause to be loaded. Julia understands three kinds of environments:
 
 1. **A project environment** is a directory with a project file and an optional manifest file. The project file determines what the names and identities of the direct dependencies of a project are. The manifest file, if present, gives a complete dependency graph, including all direct and indirect dependencies, exact versions of each dependency, and sufficient information to locate and load the correct version.
-2. **A package directory** is a directory containing, as subdirectories, the source trees of a set of packages. This is how package loading worked in older versions of Julia. For example, if `X` is a subdirectory and `X/src/X.jl` exists, then `X` is  available as dependency in the package directory's environment and `X/src/X.jl` is the source file loaded by `import X` in that environment.
-3. **A stacked environment** is an ordered set of project environments and package directories, overlaid to make a single composite environment, in which all packages available in the contained environments are available. Julia's load path, for example, is a stacked environment. By adding environments to a stack, you can make additional top-level packages available.
+2. **A package directory** is a directory containing the source trees of a set of packages. This kind of environment was the only kind that existed in Julia 0.6 and earlier. If `X` is a subdirectory of a package directory and `X/src/X.jl` exists, then the package `X` is  available in the package directory environment and `X/src/X.jl` is the source file by which it is loaded.
+3. **A stacked environment** is an ordered set of project environments and package directories, overlaid to make a single composite environment in which all packages available in the constituent environments are available. Julia's load path, for example, is a stacked environment.
 
-As an abstraction, an environment provides three maps: `roots`, `graph` and `paths`. When resolving the meaning of `import X`, `roots` and `graph` are used to determine the identity of `X` and thereby answer the "what" question, while the `paths` map is used to locate the source of a specific version of `X` and thereby anser the "where" question. In more detail, the function and behavior of these three maps are:
+As an abstraction, an environment provides three maps: `roots`, `graph` and `paths`. When resolving the meaning of `import X`, `roots` and `graph` are used to determine the identity of `X` and thereby answer the question *"what is `X`?"*, while the `paths` map is used to locate the source of that package `X` and thereby anser the question *"where can `X` be found?" The specific roles of these three maps are:
 
 - **roots:** `name::Symbol` ⟶ `uuid::UUID`
 
-   An environment's `roots` map assigns package names to UUIDs for all the top-level dependencies that the environment makes availabe to the main project (i.e. the ones that can be loaded in `Main`). When Julia encounters `import X` in the main project, it looks up the UUID of `X` as `roots[:X]`.
+   An environment's `roots` map assigns package names to UUIDs for all the top-level dependencies that the environment makes availabe to the main project (i.e. the ones that can be loaded in `Main`). When Julia encounters `import X` in the main project, it looks up the identity of `X` as `roots[:X]`.
 
 - **graph:** `context::UUID` ⟶ `name::Symbol` ⟶ `uuid::UUID`
 
-   An environment's `graph` is a multilevel map which assigns, for each `context` UUID, a map from names to UUIDs, similar to the `roots` map but specific to that `context`. When Julia sees `import X` in the package whose UUID is `context`, it looks up `graph[context][:X]` to determine `X`'s UUID. This means that `import X` can refer to different packages depending on `context`.
+   An environment's `graph` is a multilevel map which assigns, for each `context` UUID, a map from names to UUIDs, similar to the `roots` map but specific to that `context`. When Julia sees `import X` in the code of the package whose UUID is `context`, it looks up the identity of `X` as `graph[context][:X]`. In particular, this means that `import X` can refer to different packages depending on `context`.
 
 - **paths:** `uuid::UUID` ⟶ `path::String`
 
-   The `paths` map assigns UUIDs to paths of source files for packages. Once the identity of `X` in `import X` has been resolved to a UUID via `roots` or `graph`, depending on whether it is loaded from the main project or an dependency,the Julia process looks up `paths[uuid]` and includes that file. Including that file must create a module named `X`—this module is the instantiation of package `X`.
+   The `paths` map assigns UUIDs to locations of entry-point source files for packages. After the identity of `X` in `import X` has been resolved to a UUID via `roots` or `graph` (depending on whether it is loaded from the main project or an dependency), Julia determines what file to load to acquire `X` by looking up `path[uuid]` in the environment. Including this file should create a module named `X`. After the first time it is loaded, any package import that resolved to the same `uuid` will get the same module.
 
-Each kind of environment determines these three maps differently, as detailed in the following sections.
+Each kind of environment defines these three maps differently, as detailed in the following sections.
 
 #### Project environments
 
