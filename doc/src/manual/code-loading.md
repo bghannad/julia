@@ -133,40 +133,52 @@ and gets `2d15fe94-a1f7-436c-a4d8-07a9a496e01c` , which indicates that in the co
 
 What happens if `import Zebra` occurs in the main `App` project? Since `Zebra` does not occur in the project file, the import fails, even though `Zebra` does appear in the manifest file. Moreover, if `import Zebra` appears in the public `Priv` package (the one with UUID `2d15fe94-a1f7-436c-a4d8-07a9a496e01c` ), that will also fail since there is no `deps` entry map in that package's manifest stanza. Given this environment, the public `Priv` package cannot load *any* dependencies at all since it declares none. And the `Zebra` package can only be loaded by the  `Pub` package and the private `Priv` package—i.e. the two packages for which it is explicitly declared as a dependency in the manifest file.
 
-**The paths map** of a project environment is also determined by the manifest file, if present (if there is none, it is just an empty map). The path mapping for a package called `name` is determined by these two rules:
+**The paths map** of a project environment is also determined by the manifest file if present (if there is none, it is an empty map). The path for a package called `name` is determined by these two rules:
 
-1. If the manifest stanza for a package has a `path` entry, then that path is interpreted as being relative to the manifest file. If the location is a directory, return `src/$name.jl`, otherwise return the path.
-2. If the manifest stanza has `uuid` and `git-tree-sha1` entries, then compute a deterministic hash function of those two values—call it `slug`—and look for `packages/$name/$slug` in each directory in the global Julia variable `DEPOT_PATH`, returning the first one that exists.
+1. If the manifest stanza for a package has a `path` entry, then that path, relative to the manifest file, is returned. If the location is a directory, return `src/$name.jl`, otherwise return the path itself.
+2. If the manifest stanza has `uuid` and `git-tree-sha1` entries, compute a deterministic hash function of those two values, call it `slug`, and look for the directory `packages/$name/$slug` in each directory in the Julia variable `DEPOT_PATH`. Return the first such directory which exists.
 
-In the example manifest file above, if we're looking for the path of the first `Priv` package with UUID `ba13f791-ae1d-465a-978b-69c3ad90f72b`, we see that its stanza has a `path` entry, so we look at `deps/Priv` relative to the `App` project directory—let's say it's `/home/me/projects/App`—which is where the manifest file lives, see that `deps/Priv` is a directory, and return `/home/me/projects/App/deps/Priv/src/Priv.jl` as the path to the private `Priv` package.
+In the example manifest file above, to find the path of the first `Priv` package, the one with UUID `ba13f791-ae1d-465a-978b-69c3ad90f72b`, we look in its stanza and see that it has a `path` entry, so we look at `deps/Priv` relative to the `App` project directory, let's say it's `/home/me/projects/App`, see that `/home/me/projects/App/deps/Priv` is a directory, and therefore return
 
-If we're looking for the other `Priv` package, the one with UUID `2d15fe94-a1f7-436c-a4d8-07a9a496e01c`, we see that its stanza does not have a `path` entry, but does have a `git-tree-sha1` entry and the `slug` for this pair of UUID and SHA-1 values is `HDkr` (the exact details of this computation aren't important), so if we had `DEPOT_PATH == ["/users/me/.julia", "/usr/local/julia"]` then Julia would look for
+* `/home/me/projects/App/deps/Priv/src/Priv.jl`
+
+as the path to the private `Priv` package. If we're looking for the other `Priv` package, the one with UUID `2d15fe94-a1f7-436c-a4d8-07a9a496e01c`, we see that its stanza does not have a `path` entry, but it does have a `git-tree-sha1` entry. The `slug` for this pair of UUID and SHA-1 values is `HDkr` (the exact details of this computation aren't important, but it is consistent and predictable across Julia versions). Thus, if we had
+
+```
+DEPOT_PATH == ["/users/me/.julia", "/usr/local/julia"]
+```
+
+then Julia would look for the following paths to see if any of them exist:
 
 1. `/home/me/.julia/packages/Priv/HDkr/src/Priv.jl` and
 2. `/usr/local/julia/packages/Priv/HDkr/src/Priv.jl`
 
-returning the first one that exists. The `paths` map for the entire example manifest file could be:
+Depending on the details of where things live on the local file syste, the `paths` map for the entire `App` example environment could be:
 
 ```julia
 paths = Dict{UUID,String}(
     # Priv – the private one:
     UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b") =>
+        # relative entry-point inside `App` repo:
         "/home/me/projects/App/deps/Priv/src/Priv.jl",
     # Priv – the public one:
     UUID("2d15fe94-a1f7-436c-a4d8-07a9a496e01c") =>
+        # package installed in the user depot:
         "/home/me/.julia/packages/Priv/HDkr/src/Priv.jl",
     # Pub:
     UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b") =>
+        # package installed in the system depot:
         "/usr/local/julia/packages/Pub/oKpw/src/Pub.jl",
-    # SomeOther:
+    # Zebra:
     UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62") =>
-        "/home/me/.julia/packages/SomeOther/me9k/src/SomeOther.jl",
+        # package installed in the user depot:
+        "/home/me/.julia/packages/SomeOther/me9k/src/Zebra.jl",
 )
 ```
 
 #### Package directories
 
-Package directories provide a kind of environment that approximates package loading in Julia 0.6 and earlier, and which resembles package loading in many other dynamic languages. 
+Package directories provide a kind of environment that approximates package loading in Julia 0.6 and earlier, and which resembles package loading in many other dynamic languages.
 
 #### Environment stacks
 
