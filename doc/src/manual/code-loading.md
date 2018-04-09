@@ -50,9 +50,9 @@ Each kind of environment defines these three maps differently, as detailed in th
 
 #### Project environments
 
-A project environment is determined by a directory containing a project file named `Project.toml` and optionally a manifest file named `Manifest.toml`. These files can also be named `JuliaProject.toml` and `JuliaManifest.toml` in which case `Project.toml` and `Manifest.toml` are ignored if they exist, allowing for file name collisions with other tools which could potentially consider files named `Project.toml` and `Manifest.toml` significant. For pure Julia projects, the names `Project.toml` and `Manifest.toml` should be preferred. The `roots`, `graph` and `paths` maps of a project environment are defined as follows.
+A project environment is determined by a directory containing a project file, `Project.toml`, and optionally a manifest, `Manifest.toml`. These files can also be named `JuliaProject.toml` and `JuliaManifest.toml`, in which case `Project.toml` and `Manifest.toml` are ignored, which allows coexistence with other tools that might consider files named `Project.toml` and `Manifest.toml` significant. For pure Julia projects, however, the names `Project.toml` and `Manifest.toml` should be preferred. The `roots`, `graph` and `paths` maps of a project environment are defined as follows.
 
-**The roots map** of the environment is determined by the contents of the project file, specifically, its top-level `name` and `uuid` entries and its `[deps]` section (any of these three may be absent). Take the following example project file for the hypothetical application, `App`, as described above:
+**The roots map** of the environment is determined by the contents of the project file, specifically, its top-level `name` and `uuid` entries and its `[deps]` section (any of these may be absent). Consider the following example project file for the hypothetical application, `App`, as described above:
 
 ```toml
 name = "App"
@@ -63,7 +63,7 @@ Priv = "ba13f791-ae1d-465a-978b-69c3ad90f72b"
 Pub  = "c07ecb7d-0dc9-4db7-8803-fadaaeaf08e1"
 ```
 
-This project file gives the following `roots` map:
+This project file implies the following `roots` map as an explicit Julia dictionary:
 
 ```julia
 roots = Dict(
@@ -73,9 +73,9 @@ roots = Dict(
 )
 ```
 
-Note that for efficiency reasons, `roots` maps are not actually materialized as dictionaries in Julia but are instead implicitly queried through various internal APIs. Given the above `roots` map, when loading the code for `App` itself, `import Priv` causes Julia to look up `roots[:Priv]`, which yields `ba13f791-ae1d-465a-978b-69c3ad90f72b` indicating that this is the UUID of the `Priv` package to load in that context.
+Note that for efficiency reasons, `roots` maps are not materialized as dictionaries, but are instead queried through internal APIs. Given this `roots` map, in the code for `App` itself, `import Priv` causes Julia to look up `roots[:Priv]`, which yields `ba13f791-ae1d-465a-978b-69c3ad90f72b`, the UUID of the `Priv` package that is to be loaded in that context.
 
-**The depedency graph** of a project environment is determined by the contents of the manifest file, if present (if there is no manifest file then `graph` is empty). The manifest file contains a stanza for each concrete direct or indirect dependency of a project, giving the UUID and exact version hash of each dependency and optionally an explicit path. Take the following manifest file for our `App` example:
+**The depedency graph** of a project environment is determined by the contents of the manifest file, if present (if there is no manifest file, `graph` is empty). A manifest file contains a stanza for each concrete direct or indirect dependency of a project, giving the UUID and exact version information for each dependency and optionally an explicit path to it. Take the following manifest file for our `App` example:
 
 ```toml
 [[Priv]] # the private one
@@ -103,7 +103,14 @@ git-tree-sha1 = "e808e36a5d7173974b90a15a353b564f3494092f"
 version = "3.4.2"
 ```
 
-This manifest file describes the complete dependency graph of the `App` project. There are two different `Priv` packages that the application needs—one is a direct dependency, the other an indirect dependency through `Pub`. It also depends on `Pub` package. The `Pub` package and the private `Priv` package both depend on another package called `Zebra` which is not a direct dependency of `App`. Thus, the materialized full dependency `graph` data structure looks like this:
+This manifest file describes a complete dependency graph for the `App` project. Specifically:
+
+- There are two different `Priv` packages that the application needs—a private one which is a direct dependency, and a public one which is an indirect dependency through `Pub`.
+- * The private `Priv` depends on the `Pub` and `Zebra` packages.
+  * The public `Priv` has no depdendencies.
+- The application also depends on the `Pub` package, which in turn depends on the public `Priv ` and the same `Zebra` package that the private `Priv` package depends on.
+
+A materialized repreentation of this dependency `graph` looks like this:
 
 ```julia
 graph = Dict{UUID,Dict{Symbol,UUID}}(
@@ -123,37 +130,31 @@ graph = Dict{UUID,Dict{Symbol,UUID}}(
 )
 ```
 
-Again, for efficicency reasons, Julia doesn't necessary materialize this graph during package loading, but it computes portions of this graph on demand. Given this dependency `graph`, when Julia sees `import Priv` in the `Pub` package—which has UUID `ba13f791-ae1d-465a-978b-69c3ad90f72b`—it looks up
+Again, for efficicency reasons, Julia doesn't necessary materialize this graph during package loading, instead it computes parts of it as needed. Given this dependency `graph`, when Julia sees `import Priv` in the `Pub` package—which has UUID `ba13f791-ae1d-465a-978b-69c3ad90f72b`—it looks up
 
 ```julia
 graph[UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b")][:Priv]
 ```
 
-and gets `2d15fe94-a1f7-436c-a4d8-07a9a496e01c` , which indicates that in the context of the `Pub` package,  `import Priv` refers to the _other_ `Priv` package—the public one. Contrast this with what we described happening in the previous when evaluating `import Priv` in the context of the main project, resolved by `roots[:Priv]`, yielding `ba13f791-ae1d-465a-978b-69c3ad90f72b`, the UUID of the other, private `Priv` package.
+and gets `2d15fe94-a1f7-436c-a4d8-07a9a496e01c` , which indicates that in the context of the `Pub` package,  `import Priv` refers to the public `Priv` package, not the private one as the app depends on directly. Thus, the name `Priv` can refer to different packages in the main project than it does in one of the packages dependencies, smoothly allowing for name collisions in a federated packag ecosystem.
 
-What happens if `import Zebra` occurs in the main `App` project? Since `Zebra` does not occur in the project file, the import fails, even though `Zebra` does appear in the manifest file. Moreover, if `import Zebra` appears in the public `Priv` package (the one with UUID `2d15fe94-a1f7-436c-a4d8-07a9a496e01c` ), that will also fail since there is no `deps` entry map in that package's manifest stanza. Given this environment, the public `Priv` package cannot load *any* dependencies at all since it declares none. And the `Zebra` package can only be loaded by the  `Pub` package and the private `Priv` package—i.e. the two packages for which it is explicitly declared as a dependency in the manifest file.
+What happens if `import Zebra` is evaluated in the main `App` project? Since `Zebra` does not appear in the project file, the import will fail even though `Zebra` *does* appear in the manifest file. Moreover, if `import Zebra` occurred in the public `Priv` package (the one with UUID `2d15fe94-a1f7-436c-a4d8-07a9a496e01c`), that would also fail since there is no `deps` entry in that package's manifest stanza, so `Priv` cannot load any packages. The `Zebra` package can only be loaded by packages for which it appear as an explicit dependency in the manifest file: the  `Pub` package and the private `Priv` package.
 
-**The paths map** of a project environment is also determined by the manifest file if present (if there is none, it is an empty map). The path for a package called `name` is determined by these two rules:
+**The paths map** of a project environment is also determined by the manifest file if present (if absent, `paths` is an empty map). The path for a package called `X` is determined by these two rules:
 
-1. If the manifest stanza for a package has a `path` entry, then that path, relative to the manifest file, is returned. If the location is a directory, return `src/$name.jl`, otherwise return the path itself.
-2. If the manifest stanza has `uuid` and `git-tree-sha1` entries, compute a deterministic hash function of those two values, call it `slug`, and look for the directory `packages/$name/$slug` in each directory in the Julia variable `DEPOT_PATH`. Return the first such directory which exists.
+1. If the manifest stanza for a package has a `path` entry, then that path, relative to the manifest file, is returned. If the location is a directory, return `src/X.jl`, otherwise return the path itself.
+2. If the manifest stanza has `uuid` and `git-tree-sha1` entries, compute a deterministic hash function of those two values, call it `slug`, and look for the directory `packages/X/slug` in each directory in the Julia variable `DEPOT_PATH`. Return the first such directory which exists.
 
-In the example manifest file above, to find the path of the first `Priv` package, the one with UUID `ba13f791-ae1d-465a-978b-69c3ad90f72b`, we look in its stanza and see that it has a `path` entry, so we look at `deps/Priv` relative to the `App` project directory, let's say it's `/home/me/projects/App`, see that `/home/me/projects/App/deps/Priv` is a directory, and therefore return
+In the example manifest file above, to find the path of the first `Priv` packag (the one with UUID `ba13f791-ae1d-465a-978b-69c3ad90f72b`), Julia finds its stanza in the manifest file, sees that it has a `path` entry, looks at `deps/Priv` relative to the `App` project directory—say it's `/home/me/projects/App`—sees that `/home/me/projects/App/deps/Priv` is a directory, and therefore determines the path of `Priv` to be:
 
 * `/home/me/projects/App/deps/Priv/src/Priv.jl`
 
-as the path to the private `Priv` package. If we're looking for the other `Priv` package, the one with UUID `2d15fe94-a1f7-436c-a4d8-07a9a496e01c`, we see that its stanza does not have a `path` entry, but it does have a `git-tree-sha1` entry. The `slug` for this pair of UUID and SHA-1 values is `HDkr` (the exact details of this computation aren't important, but it is consistent and predictable across Julia versions). Thus, if we had
+If Julia was loading the other `Priv` package (the one with UUID `2d15fe94-a1f7-436c-a4d8-07a9a496e01c`), it would find its stanza by UUID, see that it does *not* have a `path` entry, but that it does have a `git-tree-sha1` entry. It then computes the `slug` for this UUID/SHA-1 pair, which is `HDkr` (the exact details of this computation aren't important, but it is consistent and predictable across Julia versions). This means that the path to this `Priv` package will be `packages/Priv/HDkr/src/Priv.jl` in one of the package depots. So if the contents of `DEPOT_PATH` is `["/users/me/.julia", "/usr/local/julia"]` then Julia will look for the following paths to see if any of them exist:
 
-```
-DEPOT_PATH == ["/users/me/.julia", "/usr/local/julia"]
-```
-
-then Julia would look for the following paths to see if any of them exist:
-
-1. `/home/me/.julia/packages/Priv/HDkr/src/Priv.jl` and
+1. `/home/me/.julia/packages/Priv/HDkr/src/Priv.jl`
 2. `/usr/local/julia/packages/Priv/HDkr/src/Priv.jl`
 
-Depending on the details of where things live on the local file syste, the `paths` map for the entire `App` example environment could be:
+It uses the first of these which exists as the path of `Priv`. For our `App` example, the `paths` map for the entire `App` project environment could materialized as the following dictionary:
 
 ```julia
 paths = Dict{UUID,String}(
@@ -178,7 +179,50 @@ paths = Dict{UUID,String}(
 
 #### Package directories
 
-Package directories provide a kind of environment that approximates package loading in Julia 0.6 and earlier, and which resembles package loading in many other dynamic languages.
+Package directories provide a kind of environment that approximates package loading in Julia 0.6 and earlier, and which resembles package loading in many other dynamic languages. Compared to a project environment, package directories are relatively simple—the following identities hold:
+
+* `values(roots) == keys(graph)`
+* `all(deps == roots for deps in values(graph))`
+
+In other words, a package directory defines a single consistent global name mapping which is the same in every context: in the environment defined by a package directory, `import X` means the same thing no matter where it occurs. Since, `graph[context]` is always just `roots`, we'll only give the definitions of `roots` and `paths`.
+
+**The roots map** is determined by the subdirectories of a package directory for which `X/src/X.jl` exists:
+
+1. If `X/Project.toml` exists and has a top-level UUID entry, `uuid`, then `:X => uuid` appears in `roots`;
+2. If `X/Project.toml` exists and does not have a top-level UUID entry, then `:X => dummy` appear in roots, where `dummy` is a fake UUID based on a hash of the real path of `X/Project.toml`;
+3. If `X/Project.toml` does not exist, then no entry for `X` is made in `roots`, `X` is loaded via `X/src/X.jl` and package imports encountered while loading `X` behave the same as imports in the main project.
+
+Suppose a package directory at `/home/me/JuliaPackages` had the following structure:
+
+```
+Aardvark/
+    src/Aardvark.jl
+    Project.toml
+        uuid = "4725e24d-f727-424b-bca0-c4307a3456fa"
+Marmot/
+    src/Marmot.jl
+        import Aardvark
+    Project.toml
+        # no uuid entry
+        [deps]
+        Aardvark = "4725e24d-f727-424b-bca0-c4307a3456fa"
+Zebra/
+    src/Zebra.jl
+        import Aardvark, Marmot
+    # no project file
+```
+
+The corresponding `roots` structure could be materialized as the following Julia dictionary:
+
+```julia
+roots = Dict{Symbol,UUID}(
+    :Aardvark => UUID("4725e24d-f727-424b-bca0-c4307a3456fa"), # UUID from project file
+    :Marmot   => UUID("85ad11c7-31f6-5d08-84db-0a4914d4cadf"), # dummy UUID from path
+    # no entry for Zebra
+)
+```
+
+If `import Aardvark` occurs while loading the `Zebra` package, it will load `Aardvark` just as it would
 
 #### Environment stacks
 
@@ -201,13 +245,13 @@ When Julia loads a package `X`, if the package has a UUID associated with it, t 
 
 ------
 
-If the dependencies of a project needed share a single namespace, this would be a big problem for you if you ever tried to upgrade `Public` since you would then have two different packages named `Private` as dependencies of your project. With a shared package namespace, the the only real recourse is to rename your private package to something else. This situation is not hypthetical—it's been encountered repeatedly in the wild. 
+If the dependencies of a project needed share a single namespace, this would be a big problem for you if you ever tried to upgrade `Public` since you would then have two different packages named `Private` as dependencies of your project. With a shared package namespace, the the only real recourse is to rename your private package to something else. This situation is not hypthetical—it's been encountered repeatedly in the wild.
 
-To handle this kind of situation without  is why `import Private` can mean different things in 
+To handle this kind of situation without  is why `import Private` can mean different things in
 
 
 
-here may not have been any public package named `X`, but at some point you want to upgrade 
+here may not have been any public package named `X`, but at some point you want to upgrade
 
 Julia packages are identified by [universally unique identifiers](https://en.wikipedia.org/wiki/Universally_unique_identifier) (UUIDs), unique 128-bit values that can be generated independently with astronomically probability of collision. When a Julia package is created, a UUID is generated which identifies it persistently across various events, including:
 
@@ -220,15 +264,15 @@ In any situation where the question *"are these the same package?"* needs to be 
 
 Julia package UUIDs serve a similar purpose to Java's reversed domain package names. For example, in Java you might write `import com.sun.net.httpserver.*;` to import all classes from the `com.sun.net.httpserver` package. This package name suggests that the `httpserver` package is maintained by Sun Microsystems, owner of the `sun.com` domain. Of course, Sun Microsystems no longer exists today, having been acquired by Oracle in 2010. The `com.sun` prefix for these packages, however, is permanent and cannot be updated to `com.oracle`. Even if Oracle were to sell the `sun.com` domain, all Java code using the `httpserver` package would still use the `com.sun` prefix. Since UUIDs have no inherent meaning, they avoid this problem—there's no reason to change a UUID since it entails no meaning. However, UUIDs are are hard for humans to remember and tedious to type. Accordingly, Julia's [package manager](https://julialang.org/Pkg3.jl/latest/) keeps UUIDs mostly out of sight. They don't appear in your Julia code, only in project files specifically designed to record the mapping from names to UUIDs in your projects.
 
-Once the name `X` has been mapped to a UUID, answering the question *"has `X` already been loaded?"* is a simple matter of looking up `X`'s UUID in a table of loaded packages. If `X`'s UUID is in the table, then the loaded module associated with the UUID is bound to `X` in the module where the `import X` or `using X` expression is evaluated. If the `X`'s UUID is not in the global package table, then it must be loaded, which requires answering the next qeustion: *"where can `X` be loaded from?"* but with 
+Once the name `X` has been mapped to a UUID, answering the question *"has `X` already been loaded?"* is a simple matter of looking up `X`'s UUID in a table of loaded packages. If `X`'s UUID is in the table, then the loaded module associated with the UUID is bound to `X` in the module where the `import X` or `using X` expression is evaluated. If the `X`'s UUID is not in the global package table, then it must be loaded, which requires answering the next qeustion: *"where can `X` be loaded from?"* but with
 
-for example, but since UUIDs have no meaning, they can handle package renames and even changing the controlling entitity of a package. In the case, for example, Sun Microsystems no longer exists, and `sun.com` redirects to `oracle.com`. 
+for example, but since UUIDs have no meaning, they can handle package renames and even changing the controlling entitity of a package. In the case, for example, Sun Microsystems no longer exists, and `sun.com` redirects to `oracle.com`.
 
 
 
 The load path is a stack of "environments", each of which provides three things:
 
 1. `roots`: a map from top-level names to UUIDs
-2. `graph`: a graph of dependencies from 
+2. `graph`: a graph of dependencies from
 
-searched for in the load path, which is controlled by the `LOAD_PATH` global array 
+searched for in the load path, which is controlled by the `LOAD_PATH` global array
