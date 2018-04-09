@@ -50,9 +50,9 @@ Each kind of environment determines these three maps differently, as detailed in
 
 #### Project environments
 
-A project environment is determined by a directory containing a project file named `Project.toml` and optionally a manifest file named `Manifest.toml`. These files can also be named or `JuliaProject.toml` and `JuliaManifest.toml` in which case `Project.toml` and `Manifest.toml` are ignored, allowing for file name collisions with other tools which could potentially consider a file named `Project.toml` or `Manifest.toml` significant.
+A project environment is determined by a directory containing a project file named `Project.toml` and optionally a manifest file named `Manifest.toml`. These files can also be named `JuliaProject.toml` and `JuliaManifest.toml` in which case `Project.toml` and `Manifest.toml` are ignored if they exist, allowing for file name collisions with other tools which could potentially consider files named `Project.toml` and `Manifest.toml` significant. For pure Julia projects, the names `Project.toml` and `Manifest.toml` should be preferred. The `roots`, `graph` and `paths` maps of a project environment are defined as follows.
 
-**The roots map** of the environment is determined by the contents of the project file, specifically, its top-level `name` entry , its top-level `uuid` entry, and its `[deps]` section—all of which are may also be absent. Consider the following example project file for the hypothetical application, `App`:
+**The roots map** of the environment is determined by the contents of the project file, specifically, its top-level `name` and `uuid` entries and its `[deps]` section (any of these three may be absent). Take the following example project file for the hypothetical application, `App`, as described above:
 
 ```toml
 name = "App"
@@ -63,23 +63,23 @@ Priv = "ba13f791-ae1d-465a-978b-69c3ad90f72b"
 Pub  = "c07ecb7d-0dc9-4db7-8803-fadaaeaf08e1"
 ```
 
-This project file implies the following `roots` map in Julia syntax:
+This project file gives the following `roots` map:
 
 ```julia
 roots = Dict(
-    "App"  => UUID("8f986787-14fe-4607-ba5d-fbff2944afa9"),
-    "Priv" => UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b"),
-    "Pub"  => UUID("c07ecb7d-0dc9-4db7-8803-fadaaeaf08e1"),
+    :App  => UUID("8f986787-14fe-4607-ba5d-fbff2944afa9"),
+    :Priv => UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b"),
+    :Pub  => UUID("c07ecb7d-0dc9-4db7-8803-fadaaeaf08e1"),
 )
 ```
 
-Given this `roots` map, if when loading the code for `App` itself, one encounterd `import Priv` Julia looks up `roots["Priv"]` and gets `ba13f791-ae1d-465a-978b-69c3ad90f72b`, indicating which `Priv` package to load in that context.
+Note that for efficiency reasons, `roots` maps are not actually materialized as dictionaries in Julia but are instead implicitly queried through various internal APIs. Given the above `roots` map, when loading the code for `App` itself, `import Priv` causes Julia to look up `roots[:Priv]`, which yields `ba13f791-ae1d-465a-978b-69c3ad90f72b` indicating that this is the UUID of the `Priv` package to load in that context.
 
-**The depedency graph** of a project environment is determined by the contents of the manifest file, if present (if there is none, it is just an empty graph). The manifest file contains a stanza for each concrete direct or indirect dependency of a project, giving the UUID and exact version hash of each and optionally path of each. Consider the following example manifest file for `App`:
+**The depedency graph** of a project environment is determined by the contents of the manifest file, if present (if there is no manifest file then `graph` is empty). The manifest file contains a stanza for each concrete direct or indirect dependency of a project, giving the UUID and exact version hash of each dependency and optionally an explicit path. Take the following manifest file for our `App` example:
 
 ```toml
 [[Priv]] # the private one
-deps = ["Pub", "SomeOther"]
+deps = ["Pub", "Zebra"]
 uuid = "ba13f791-ae1d-465a-978b-69c3ad90f72b"
 path = "deps/Priv"
 
@@ -95,41 +95,43 @@ version = "2.1.4"
 
   [Pub.deps]
   Priv = "2d15fe94-a1f7-436c-a4d8-07a9a496e01c"
-  SomeOther = "f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62"
+  Zebra = "f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62"
 
-[[SomeOther]]
+[[Zebra]]
 uuid = "f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62"
 git-tree-sha1 = "e808e36a5d7173974b90a15a353b564f3494092f"
 version = "3.4.2"
 ```
 
-This manifest file describes the total dependency graph of the `App` project: there are two different `Priv` packages that the application needs, one `Pub` package and another package called `SomeOther`. The dependency graph data structure looks like this:
+This manifest file describes the complete dependency graph of the `App` project. There are two different `Priv` packages that the application needs—one is a direct dependency, the other an indirect dependency through `Pub`. It also depends on `Pub` package. The `Pub` package and the private `Priv` package both depend on another package called `Zebra` which is not a direct dependency of `App`. Thus, the materialized full dependency `graph` data structure looks like this:
 
 ```julia
-graph = Dict{UUID,Dict{String,UUID}}(
+graph = Dict{UUID,Dict{Symbol,UUID}}(
     # Priv – the private one:
-    UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b") => Dict{String,UUID}(
-        "SomeOther" => UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62"),
+    UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b") => Dict{Symbol,UUID}(
+        :Zebra => UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62"),
     ),
     # Priv – the public one:
-    UUID("2d15fe94-a1f7-436c-a4d8-07a9a496e01c") => Dict{String,UUID}(),
+    UUID("2d15fe94-a1f7-436c-a4d8-07a9a496e01c") => Dict{Symbol,UUID}(),
     # Pub:
-    UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b") => Dict{String,UUID}(
-        "Priv" => UUID("2d15fe94-a1f7-436c-a4d8-07a9a496e01c"),
-        "SomeOther" => UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62"),
+    UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b") => Dict{Symbol,UUID}(
+        :Priv  => UUID("2d15fe94-a1f7-436c-a4d8-07a9a496e01c"),
+        :Zebra => UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62"),
     ),
     # SomeOther:
-    UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62") => Dict{String,UUID}(),
+    UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62") => Dict{Symbol,UUID}(),
 )
 ```
 
-Given this `graph` structure as an environment, if Julia encounters `import Priv` when loading the code for the `Pub` package, which has UUID `ba13f791-ae1d-465a-978b-69c3ad90f72b`, it looks up
+Again, for efficicency reasons, Julia doesn't necessary materialize this graph during package loading, but it computes portions of this graph on demand. Given this dependency `graph`, when Julia sees `import Priv` in the `Pub` package—which has UUID `ba13f791-ae1d-465a-978b-69c3ad90f72b`—it looks up
 
 ```julia
-graph[UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b")]["Priv"]
+graph[UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b")][:Priv]
 ```
 
-and gets `2d15fe94-a1f7-436c-a4d8-07a9a496e01c` , which indicates that in this context, `import Priv` refers to the _other_ `Priv` package—the public one with that UUID.
+and gets `2d15fe94-a1f7-436c-a4d8-07a9a496e01c` , which indicates that in the context of the `Pub` package,  `import Priv` refers to the _other_ `Priv` package—the public one. Contrast this with what we described happening in the previous when evaluating `import Priv` in the context of the main project, resolved by `roots[:Priv]`, yielding `ba13f791-ae1d-465a-978b-69c3ad90f72b`, the UUID of the other, private `Priv` package.
+
+What happens if `import Zebra` occurs in the main `App` project? Since `Zebra` does not occur in the project file, the import fails, even though `Zebra` does appear in the manifest file. Moreover, if `import Zebra` appears in the public `Priv` package (the one with UUID `2d15fe94-a1f7-436c-a4d8-07a9a496e01c` ), that will also fail since there is no `deps` entry map in that package's manifest stanza. Given this environment, the public `Priv` package cannot load *any* dependencies at all since it declares none. And the `Zebra` package can only be loaded by the  `Pub` package and the private `Priv` package—i.e. the two packages for which it is explicitly declared as a dependency in the manifest file.
 
 **The paths map** of a project environment is also determined by the manifest file, if present (if there is none, it is just an empty map). The path mapping for a package called `name` is determined by these two rules:
 
