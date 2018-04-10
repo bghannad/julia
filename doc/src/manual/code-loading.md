@@ -179,37 +179,37 @@ paths = Dict{UUID,String}(
 
 #### Package directories
 
-Package directories provide a kind of environment that approximates package loading in Julia 0.6 and earlier, and which resembles package loading in many other dynamic languages. Compared to a project environment, package directories are relatively simple—the following identities hold:
+Package directories provide a kind of environment that approximates package loading in Julia 0.6 and earlier, and which resembles package loading in many other dynamic languages. The set of top-level packages made available by a package directory is just the set of subdirectories it contains that look like packages—e.g. if `X` is a subdirectory and `X/src/X.jl` is a file, then `X` is considered to be a package and `X/src/X.jl` is the file you load to get `X`. Which packages can "see" each other via `graph` depends on if they have project files and what's in their `[deps]` sections if they do.
 
-* `values(roots) == keys(graph)`
-* `all(deps == roots for deps in values(graph))`
+**The roots map** is determined by the subdirectories of a package directory for which `X/src/X.jl` exists and the presence and, if present, the top-level `uuid` entry of the `X/Project.toml` file:
 
-In other words, a package directory defines a single consistent global name mapping which is the same in every context: in the environment defined by a package directory, `import X` means the same thing no matter where it occurs. Since, `graph[context]` is always just `roots`, we'll only give the definitions of `roots` and `paths`.
+1. If `X/Project.toml` exists and has a top-level UUID entry, `uuid`, then `:X => uuid` goes in `roots`.
+2. If `X/Project.toml` exists and does not have a top-level UUID entry, then `:X => dummy` goes in roots, where `dummy` is a fake UUID based on hashing the canonicalized absolute path of `X/Project.toml`.
+3. If `X/Project.toml` does not exist, then `X => nil` goes in `roots`, where `nil` is the [nil UUID](https://en.wikipedia.org/wiki/Universally_unique_identifier#Nil_UUID), `00000000-0000-0000-0000-000000000000`. Inside of `X`, imports behave in as they do in the main project—that is, `import Y` in `X`'s code is resolved as `roots[:Y]` instead of using `graph`.
 
-**The roots map** is determined by the subdirectories of a package directory for which `X/src/X.jl` exists:
 
-1. If `X/Project.toml` exists and has a top-level UUID entry, `uuid`, then `:X => uuid` appears in `roots`;
-2. If `X/Project.toml` exists and does not have a top-level UUID entry, then `:X => dummy` appear in roots, where `dummy` is a fake UUID based on a hash of the real path of `X/Project.toml`;
-3. If `X/Project.toml` does not exist, then no entry for `X` is made in `roots`, `X` is loaded via `X/src/X.jl` and package imports encountered while loading `X` behave the same as imports in the main project.
 
 Suppose a package directory at `/home/me/JuliaPackages` had the following structure:
 
 ```
 Aardvark/
-    src/Aardvark.jl
     Project.toml
         uuid = "4725e24d-f727-424b-bca0-c4307a3456fa"
+    src/Aardvark.jl
+    	# no imports
+
 Marmot/
-    src/Marmot.jl
-        import Aardvark
     Project.toml
         # no uuid entry
         [deps]
         Aardvark = "4725e24d-f727-424b-bca0-c4307a3456fa"
+    src/Marmot.jl
+        import Aardvark
+
 Zebra/
+    # no project file
     src/Zebra.jl
         import Aardvark, Marmot
-    # no project file
 ```
 
 The corresponding `roots` structure could be materialized as the following Julia dictionary:
