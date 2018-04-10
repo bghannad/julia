@@ -42,9 +42,9 @@ As an abstraction, an environment provides three maps: `roots`, `graph` and `pat
 
    An environment's `graph` is a multilevel map which assigns, for each `context` UUID, a map from names to UUIDs, similar to the `roots` map but specific to that `context`. When Julia sees `import X` in the code of the package whose UUID is `context`, it looks up the identity of `X` as `graph[context][:X]`. In particular, this means that `import X` can refer to different packages depending on `context`.
 
-- **paths:** `uuid::UUID` ⟶ `path::String`
+- **paths:** `uuid::UUID` × `name::Symbol` ⟶ `path::String`
 
-   The `paths` map assigns UUIDs to locations of entry-point source files for packages. After the identity of `X` in `import X` has been resolved to a UUID via `roots` or `graph` (depending on whether it is loaded from the main project or an dependency), Julia determines what file to load to acquire `X` by looking up `path[uuid]` in the environment. Including this file should create a module named `X`. After the first time it is loaded, any package import that resolved to the same `uuid` will get the same module.
+   The `paths` map assigns a UUID and a name to the location of the entry-point source file of that package. After the identity of `X` in `import X` has been resolved to a UUID via `roots` or `graph` (depending on whether it is loaded from the main project or an dependency), Julia determines what file to load to acquire `X` by looking up `paths[uuid, :X]` in the environment. Including this file should create a module named `X`. After the first time this package is loaded, any import resolving to the same `uuid` will simply create a new binding to the same already-loaded package module.
 
 Each kind of environment defines these three maps differently, as detailed in the following sections.
 
@@ -125,7 +125,7 @@ graph = Dict{UUID,Dict{Symbol,UUID}}(
         :Priv  => UUID("2d15fe94-a1f7-436c-a4d8-07a9a496e01c"),
         :Zebra => UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62"),
     ),
-    # SomeOther:
+    # Zebra:
     UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62") => Dict{Symbol,UUID}(),
 )
 ```
@@ -157,72 +157,134 @@ If Julia was loading the other `Priv` package (the one with UUID `2d15fe94-a1f7-
 It uses the first of these which exists as the path of `Priv`. For our `App` example, the `paths` map for the entire `App` project environment could materialized as the following dictionary:
 
 ```julia
-paths = Dict{UUID,String}(
+paths = Dict{Tuple{UUID,Symbol},String}(
     # Priv – the private one:
-    UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b") =>
+    (UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b"), :Priv) =>
         # relative entry-point inside `App` repo:
         "/home/me/projects/App/deps/Priv/src/Priv.jl",
     # Priv – the public one:
-    UUID("2d15fe94-a1f7-436c-a4d8-07a9a496e01c") =>
+    (UUID("2d15fe94-a1f7-436c-a4d8-07a9a496e01c"), :Priv) =>
         # package installed in the user depot:
         "/home/me/.julia/packages/Priv/HDkr/src/Priv.jl",
     # Pub:
-    UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b") =>
+    (UUID("ba13f791-ae1d-465a-978b-69c3ad90f72b"), :Pub) =>
         # package installed in the system depot:
         "/usr/local/julia/packages/Pub/oKpw/src/Pub.jl",
     # Zebra:
-    UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62") =>
+    (UUID("f7a24cb4-21fc-4002-ac70-f0e3a0dd3f62"), :Zebra) =>
         # package installed in the user depot:
-        "/home/me/.julia/packages/SomeOther/me9k/src/Zebra.jl",
+        "/home/me/.julia/packages/Zebra/me9k/src/Zebra.jl",
 )
 ```
 
 #### Package directories
 
-Package directories provide a kind of environment that approximates package loading in Julia 0.6 and earlier, and which resembles package loading in many other dynamic languages. The set of top-level packages made available by a package directory is just the set of subdirectories it contains that look like packages—e.g. if `X` is a subdirectory and `X/src/X.jl` is a file, then `X` is considered to be a package and `X/src/X.jl` is the file you load to get `X`. Which packages can "see" each other via `graph` depends on if they have project files and what's in their `[deps]` sections if they do.
+Package directories provide a kind of environment that approximates package loading in Julia 0.6 and earlier, and which resembles package loading in many other dynamic languages. The set of top-level packages made available by a package directory corresponds to the set of subdirectories it contains that look like packages: if `X` is a subdirectory and `X/src/X.jl` is a file, then `X` is considered to be a package and `X/src/X.jl` is the file you load to get `X`. Which packages can "see" each other via `graph` depends on if they contain project files and what is in the `[deps]` section of those project files.
 
 **The roots map** is determined by the subdirectories of a package directory for which `X/src/X.jl` exists and the presence and, if present, the top-level `uuid` entry of the `X/Project.toml` file:
 
 1. If `X/Project.toml` exists and has a top-level UUID entry, `uuid`, then `:X => uuid` goes in `roots`.
 2. If `X/Project.toml` exists and does not have a top-level UUID entry, then `:X => dummy` goes in roots, where `dummy` is a fake UUID based on hashing the canonicalized absolute path of `X/Project.toml`.
-3. If `X/Project.toml` does not exist, then `X => nil` goes in `roots`, where `nil` is the [nil UUID](https://en.wikipedia.org/wiki/Universally_unique_identifier#Nil_UUID), `00000000-0000-0000-0000-000000000000`. Inside of `X`, imports behave in as they do in the main project—that is, `import Y` in `X`'s code is resolved as `roots[:Y]` instead of using `graph`.
+3. If `X/Project.toml` does not exist, then `:X => nil` goes in `roots`, where `nil` is the [nil UUID](https://en.wikipedia.org/wiki/Universally_unique_identifier#Nil_UUID), `00000000-0000-0000-0000-000000000000`.
 
+**The dependency graph** of a project directory is determined by the presence and contents of project files in the subdirectory of each package. There are two rules:
 
+- If a package subdirectory has no project file, then it does not appear in `graph` at all and import statements in its code are treated as top-level, just as if they occurred in the main project or REPL.
+- If a package subdirectory has a project file with a real or dummy UUID (as described above), then the `graph` entry for that UUID is the `[deps]` map of that project file, empty if there is no section.
 
-Suppose a package directory at `/home/me/JuliaPackages` had the following structure:
+To better understand both the `roots` and `graph` rules for project directories, suppose a package directory had the following structure and content:
 
 ```
 Aardvark/
-    Project.toml
-        uuid = "4725e24d-f727-424b-bca0-c4307a3456fa"
     src/Aardvark.jl
-    	# no imports
+        import Bobcat
+        import Cobra
 
-Marmot/
-    Project.toml
-        # no uuid entry
+Bobcat/
+    Project.toml:
         [deps]
-        Aardvark = "4725e24d-f727-424b-bca0-c4307a3456fa"
-    src/Marmot.jl
-        import Aardvark
+        Cobra = "4725e24d-f727-424b-bca0-c4307a3456fa"
+        Dingo = "7a7925be-828c-4418-bbeb-bac8dfc843bc"
 
-Zebra/
-    # no project file
-    src/Zebra.jl
-        import Aardvark, Marmot
+    src/Bobcat.jl:
+        import Cobra
+        import Dingo
+
+Cobra/
+    Project.toml:
+        uuid = "4725e24d-f727-424b-bca0-c4307a3456fa"
+        [deps]
+        Dingo = "7a7925be-828c-4418-bbeb-bac8dfc843bc"
+
+    src/Cobra.jl:
+        import Dingo
+
+Dingo/
+    Project.toml:
+        uuid = "7a7925be-828c-4418-bbeb-bac8dfc843bc"
+
+    src/Dingo.jl
+        # no imports
 ```
 
-The corresponding `roots` structure could be materialized as the following Julia dictionary:
+The corresponding `roots` structure materialized as a Julia dictionary:
 
 ```julia
 roots = Dict{Symbol,UUID}(
-    :Aardvark => UUID("4725e24d-f727-424b-bca0-c4307a3456fa"), # UUID from project file
-    :Marmot   => UUID("85ad11c7-31f6-5d08-84db-0a4914d4cadf"), # dummy UUID from path
-    # no entry for Zebra
+    :Aardvark => UUID("00000000-0000-0000-0000-000000000000"), # no project file, nil UUID
+    :Bobcat   => UUID("85ad11c7-31f6-5d08-84db-0a4914d4cadf"), # dummy UUID based on path
+    :Cobra    => UUID("4725e24d-f727-424b-bca0-c4307a3456fa"), # UUID from project file
+    :Dingo    => UUID("7a7925be-828c-4418-bbeb-bac8dfc843bc"), # UUID from project file
 )
 ```
 
-If `import Aardvark` occurs while loading the `Zebra` package, it will load `Aardvark` just as it would
+And the corresponding `graph` structure materialized as a Julia dictionary:
+
+```julia
+graph = Dict{UUID,Dict{Symbol,UUID}}(
+    # Bobcat:
+    UUID("85ad11c7-31f6-5d08-84db-0a4914d4cadf") => Dict{Symbol,UUID}(
+        :Cobra    => UUID("4725e24d-f727-424b-bca0-c4307a3456fa"),
+        :Dingo    => UUID("7a7925be-828c-4418-bbeb-bac8dfc843bc"),
+    ),
+    # Cobra:
+    UUID("4725e24d-f727-424b-bca0-c4307a3456fa") => Dict{Symbol,UUID}(
+        :Dingo    => UUID("7a7925be-828c-4418-bbeb-bac8dfc843bc"),
+    ),
+    # Dingo:
+    UUID("7a7925be-828c-4418-bbeb-bac8dfc843bc") => Dict{Symbol,UUID}(),
+)
+```
+
+A few general rules to note:
+
+1. A package without a project file can depend on any top-level dependency and since every package in a package directory is available at the top-level, it can import all packages in the environment.
+2. A package with a project file cannot depend on one without a project file since packages without project files do not appear in `graph` and packages with project files can only load packages in `graph`.
+3. A package with a project file but no explicit top-level UUID entry can only be depended on by packages without project files since they have a dummy UUID that is only used internally in Julia's own data structures. We've included an actual dummy UUID value here, but only for demonstration.
+
+We observe the following specifics instances of these rules in our example:
+
+* `Aardvark` could import on any of `Bobcat`, `Cobra` or `Dingo` and does import `Bobcat` and `Cobra`.
+* `Bobcat` can and does import both `Cobra` and `Dingo`, both of which have project files with explicit UUIDs and are declared as dependencies in the `[deps]` section of `Bobcat`'s project file. `Bobcat` could not depend on `Aardvark` since `Aardvark` does not have a project file or UUID.
+* `Cobra` can and does import `Dingo`, which has a project file and UUID, and is explicitly declared as a dependency in the `[deps]` section of `Cobra`'s project file. `Cobra` could not depend on `Aardvark` or `Bobcat`: the former because it has no project file and the latter because it has no UUID.
+* `Dingo` cannot import anything because it has a project file with no `[deps]` section.
+
+**The paths map** in a package directory is extremely simple: it maps subdirectory names to their corresponding entry-point paths. In other words, if the path to our example project directory is `/home/me/AnimalPackages` then the `paths` map would be materialized as this dictionary:
+
+```julia
+paths = Dict{Tuple{UUID,Symbol},String}(
+    (UUID("00000000-0000-0000-0000-000000000000"), :Aardvark) =>
+        "/home/me/AnimalPackages/Aardvark/src/Aardvark.jl",
+    (UUID("85ad11c7-31f6-5d08-84db-0a4914d4cadf"), :Bobcat) =>
+        "/home/me/AnimalPackages/Bobcat/src/Bobcat.jl",
+    (UUID("4725e24d-f727-424b-bca0-c4307a3456fa"), :Cobra) =>
+        "/home/me/AnimalPackages/Cobra/src/Cobra.jl",
+    (UUID("7a7925be-828c-4418-bbeb-bac8dfc843bc"), :Dingo) =>
+        "/home/me/AnimalPackages/Dingo/src/Dingo.jl",
+)
+```
+
+Since all packages in a package directory environment are, by definiton, subdirectories with the expected entry-point files in the top-level directory, the `paths` map is unsurprisingly uniform and consistent.
 
 #### Environment stacks
 
