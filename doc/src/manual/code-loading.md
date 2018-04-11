@@ -258,9 +258,9 @@ graph = Dict{UUID,Dict{Symbol,UUID}}(
 
 A few general rules to note:
 
-1. A package without a project file can depend on any top-level dependency and since every package in a package directory is available at the top-level, it can import all packages in the environment.
-2. A package with a project file cannot depend on one without a project file since packages without project files do not appear in `graph` and packages with project files can only load packages in `graph`.
-3. A package with a project file but no explicit top-level UUID entry can only be depended on by packages without project files since they have a dummy UUID that is only used internally in Julia's own data structures. We've included an actual dummy UUID value here, but only for demonstration.
+1. A package without a project file can depend on any top-level dependency, and since every package in a package directory is available at the top-level, it can import all packages in the environment.
+2. A package with a project file cannot depend on one without a project file since packages with project files can only load packages in `graph` and packages without project files do not appear in `graph`.
+3. A package with a project file but no explicit top-level UUID entry can only be depended on by packages without project files since they have a dummy UUID which is only used internally by Julia and never user-visible. We've included an explicit dummy UUID value here, but only for demonstration.
 
 We observe the following specifics instances of these rules in our example:
 
